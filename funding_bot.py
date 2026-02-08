@@ -14,28 +14,23 @@ RSS_FEEDS = [
     "https://inc42.com/buzz/feed/",
     "https://yourstory.com/tag/funding/feed",
     "https://www.vccircle.com/tag/funding/feed",
-    "https://economictimes.indiatimes.com/small-biz/startups/funding/rssfeeds/89409759.cms",
 ]
-
-FUNDING_PATTERN = re.compile(
-    r"(raises|raised|bags|secures|gets|closes).*?(funding|round|investment)",
-    re.IGNORECASE,
-)
 
 AMOUNT_PATTERN = re.compile(
     r"(\$ ?\d+\.?\d*\s?(million|billion|m|bn)?|₹ ?\d+\.?\d*\s?(crore|lakh)?)",
     re.IGNORECASE,
 )
 
-INVESTOR_PATTERN = re.compile(
-    r"(from|led by|backed by)\s([A-Z][A-Za-z0-9 ,&\-]+)",
-    re.IGNORECASE,
-)
+FUNDING_WORDS = ["raise", "raised", "raises", "funding", "secures", "bags"]
 
 
-def extract_startup(title):
-    words = title.split()
-    return " ".join(words[:3])
+def is_funding_title(title):
+    t = title.lower()
+    return any(word in t for word in FUNDING_WORDS)
+
+
+def extract_company(title):
+    return title.split("raises")[0].split("raised")[0][:60].strip()
 
 
 def extract_amount(text):
@@ -43,15 +38,16 @@ def extract_amount(text):
     return m.group(0) if m else "Not found"
 
 
-def extract_investor(text):
-    m = INVESTOR_PATTERN.search(text)
-    return m.group(2) if m else "Not found"
+def get_description(soup):
+    paragraphs = soup.find_all("p")
+    text = " ".join(p.get_text() for p in paragraphs)
+    return text[:200]
 
 
 def extract_article(entry):
     title = entry.title
 
-    if not FUNDING_PATTERN.search(title):
+    if not is_funding_title(title):
         return None
 
     try:
@@ -59,19 +55,17 @@ def extract_article(entry):
                          headers={"User-Agent": "Mozilla/5.0"})
         soup = BeautifulSoup(r.text, "lxml")
 
-        paragraphs = soup.find_all("p")
-        text = " ".join(p.get_text() for p in paragraphs)
+        description = get_description(soup)
+        amount = extract_amount(description)
+        company = extract_company(title)
 
-        startup = extract_startup(title)
-        amount = extract_amount(text)
-        investor = extract_investor(text)
+        linkedin_search = f"https://www.linkedin.com/search/results/all/?keywords={company}%20founder"
 
         return {
-            "startup_name": startup,
-            "two_line_description": text[:200],
-            "who_invested": investor,
-            "how_much_invested": amount,
-            "founders_linkedin": f"https://www.linkedin.com/search/results/all/?keywords={startup}%20founder",
+            "company_name": company,
+            "amount_raised": amount,
+            "two_line_description": description,
+            "founder_linkedin": linkedin_search,
             "link": entry.link
         }
 
@@ -91,12 +85,11 @@ def collect_news():
                 continue
 
             data = extract_article(entry)
-
             if data:
                 results.append(data)
                 seen.add(entry.link)
 
-    return results
+    return results[:20]
 
 
 def send_email(df):
@@ -119,11 +112,10 @@ def main():
 
     if not data:
         data = [{
-            "startup_name": "No funding news detected",
+            "company_name": "No funding news found",
+            "amount_raised": "-",
             "two_line_description": "-",
-            "who_invested": "-",
-            "how_much_invested": "-",
-            "founders_linkedin": "-",
+            "founder_linkedin": "-",
             "link": "-"
         }]
 
