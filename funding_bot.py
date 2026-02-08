@@ -7,8 +7,8 @@ import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-EMAIL = "katherakarthik7@gmail.com"
-PASSWORD = "YOUR_GMAIL_APP_PASSWORD"
+EMAIL = "karthikkattera8688@gmail.com"
+PASSWORD = "uugn mvbr xqpb fcqt"
 
 RSS_FEEDS = [
     "https://inc42.com/buzz/feed/",
