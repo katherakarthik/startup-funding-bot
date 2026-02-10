@@ -58,60 +58,10 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
-def get_description_and_investors(soup: BeautifulSoup):
-    """
-    Use the first few <p> tags (intro) for summary and scan them for investors.
-    """
+def get_body_text(soup: BeautifulSoup) -> str:
     paragraphs = soup.find_all("p")
-
-    # Take first 3–4 non-empty paragraphs as intro
-    intro_paras = []
-    for p in paragraphs:
-        txt = clean_text(p.get_text(separator=" ", strip=True))
-        if txt:
-            intro_paras.append(txt)
-        if len(intro_paras) >= 4:
-            break
-
-    full_intro = " ".join(intro_paras)
-    if not full_intro:
-        full_intro = "No description available."
-
-    # Build 1–2 sentence summary
-    sentences = re.split(r"(?<=[.!?])\s+", full_intro)
-    summary = " ".join(sentences[:2])
-    summary = summary[:400]
-
-    # Try to extract investors from intro text
-    investors = extract_investors(full_intro)
-
-    return summary, investors
-
-
-def extract_investors(text: str) -> str:
-    """
-    Very simple heuristic: capture text after 'led by', 'from', 'backed by', 'including', etc.
-    This will not be perfect but usually gives decent 'who invested' info.
-    """
-    lower = text.lower()
-
-    patterns = [
-        r"led by ([^.]+)",
-        r"from ([^.]+)",
-        r"backed by ([^.]+)",
-        r"including ([^.]+)",
-        r"co-led by ([^.]+)",
-    ]
-
-    for pat in patterns:
-        m = re.search(pat, lower)
-        if m:
-            # Grab the original text slice for nicer casing
-            start, end = m.span(1)
-            raw = text[start:end]
-            return clean_text(raw)
-
-    return "Not clearly specified"
+    text = " ".join(clean_text(p.get_text(separator=" ", strip=True)) for p in paragraphs)
+    return text
 
 
 def extract_article(entry):
@@ -129,8 +79,8 @@ def extract_article(entry):
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "lxml")
 
-        description, investors = get_description_and_investors(soup)
-        amount = extract_amount(title, description)
+        body_text = get_body_text(soup)
+        amount = extract_amount(title, body_text)
         company = extract_company(title)
 
         query = urllib.parse.quote(f"{company} founder")
@@ -141,8 +91,6 @@ def extract_article(entry):
         return {
             "company_name": company,
             "amount_raised": amount,
-            "who_invested": investors,
-            "two_line_description": description,
             "founder_linkedin": linkedin_search,
             "link": entry.link,
         }
@@ -187,12 +135,10 @@ def send_email(df: pd.DataFrame):
         lambda url: f'<a href="{url}">Article</a>' if url.startswith("http") else url
     )
 
-    # Order columns nicely
+    # Final columns (no who_invested, no two_line_description)
     cols = [
         "company_name",
         "amount_raised",
-        "who_invested",
-        "two_line_description",
         "founder_linkedin",
         "link",
     ]
@@ -200,7 +146,6 @@ def send_email(df: pd.DataFrame):
 
     table_html = df.to_html(index=False, escape=False)
 
-    # Wrap table in styled HTML
     html = f"""
     <html>
     <head>
@@ -266,8 +211,6 @@ def main():
             {
                 "company_name": "No funding news found",
                 "amount_raised": "-",
-                "who_invested": "-",
-                "two_line_description": "-",
                 "founder_linkedin": "-",
                 "link": "-",
             }
