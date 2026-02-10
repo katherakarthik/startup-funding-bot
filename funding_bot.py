@@ -17,8 +17,6 @@ RSS_FEEDS = [
     "https://www.vccircle.com/tag/funding/feed",
 ]
 
-# Examples it should capture:
-# "$35 million", "$35m", "35m", "$35 Mn", "₹200 crore", "Rs 200 crore"
 AMOUNT_PATTERN = re.compile(
     r"(\$ ?\d+\.?\d*\s?(million|billion|mn|bn|m|b)?|₹ ?\d+\.?\d*\s?(crore|cr|lakh|l)?|rs\.? ?\d+\.?\d*\s?(crore|cr|lakh|l)?)",
     re.IGNORECASE,
@@ -33,11 +31,6 @@ def is_funding_title(title: str) -> bool:
 
 
 def extract_company(title: str) -> str:
-    """
-    Try to cut off at common funding verbs:
-    'Nvidia raises $35M Series A led by...' -> 'Nvidia'
-    'Fintech startup XYZ bags funding from...' -> 'Fintech startup XYZ'
-    """
     lower = title.lower()
     cut_words = [" raises", " raised", " bags", " bagged", " secures", " gets", " lands"]
     end = len(title)
@@ -51,9 +44,6 @@ def extract_company(title: str) -> str:
 
 
 def extract_amount(text_title: str, text_body: str) -> str:
-    """
-    Look for amount first in the title, then in the body text.
-    """
     m = AMOUNT_PATTERN.search(text_title)
     if m:
         return m.group(0).strip()
@@ -63,22 +53,65 @@ def extract_amount(text_title: str, text_body: str) -> str:
     return "Not found"
 
 
-def get_description(soup: BeautifulSoup) -> str:
+def clean_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def get_description_and_investors(soup: BeautifulSoup):
     """
-    Collect paragraph text, then return 1–2 sentences as a concise summary.
+    Use the first few <p> tags (intro) for summary and scan them for investors.
     """
     paragraphs = soup.find_all("p")
-    text = " ".join(p.get_text(separator=" ", strip=True) for p in paragraphs)
-    text = re.sub(r"\s+", " ", text).strip()
 
-    if not text:
-        return "No description available."
+    # Take first 3–4 non-empty paragraphs as intro
+    intro_paras = []
+    for p in paragraphs:
+        txt = clean_text(p.get_text(separator=" ", strip=True))
+        if txt:
+            intro_paras.append(txt)
+        if len(intro_paras) >= 4:
+            break
 
-    # Split into sentences (simple heuristic)
-    sentences = re.split(r"(?<=[.!?])\s+", text)
-    summary = " ".join(sentences[:2])  # first two sentences
-    # Keep it reasonably short
-    return summary[:400]
+    full_intro = " ".join(intro_paras)
+    if not full_intro:
+        full_intro = "No description available."
+
+    # Build 1–2 sentence summary
+    sentences = re.split(r"(?<=[.!?])\s+", full_intro)
+    summary = " ".join(sentences[:2])
+    summary = summary[:400]
+
+    # Try to extract investors from intro text
+    investors = extract_investors(full_intro)
+
+    return summary, investors
+
+
+def extract_investors(text: str) -> str:
+    """
+    Very simple heuristic: capture text after 'led by', 'from', 'backed by', 'including', etc.
+    This will not be perfect but usually gives decent 'who invested' info.
+    """
+    lower = text.lower()
+
+    patterns = [
+        r"led by ([^.]+)",
+        r"from ([^.]+)",
+        r"backed by ([^.]+)",
+        r"including ([^.]+)",
+        r"co-led by ([^.]+)",
+    ]
+
+    for pat in patterns:
+        m = re.search(pat, lower)
+        if m:
+            # Grab the original text slice for nicer casing
+            start, end = m.span(1)
+            raw = text[start:end]
+            return clean_text(raw)
+
+    return "Not clearly specified"
 
 
 def extract_article(entry):
@@ -96,11 +129,10 @@ def extract_article(entry):
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "lxml")
 
-        description = get_description(soup)
+        description, investors = get_description_and_investors(soup)
         amount = extract_amount(title, description)
         company = extract_company(title)
 
-        # Properly URL-encoded LinkedIn search (valid URL)
         query = urllib.parse.quote(f"{company} founder")
         linkedin_search = (
             f"https://www.linkedin.com/search/results/all/?keywords={query}"
@@ -109,6 +141,7 @@ def extract_article(entry):
         return {
             "company_name": company,
             "amount_raised": amount,
+            "who_invested": investors,
             "two_line_description": description,
             "founder_linkedin": linkedin_search,
             "link": entry.link,
@@ -144,8 +177,9 @@ def send_email(df: pd.DataFrame):
     msg["From"] = EMAIL
     msg["To"] = EMAIL
 
-    # Make founder_linkedin clickable and show it nicely
     df = df.copy()
+
+    # Make founder_linkedin and link clickable
     df["founder_linkedin"] = df["founder_linkedin"].apply(
         lambda url: f'<a href="{url}">{url}</a>' if url.startswith("http") else url
     )
@@ -153,7 +187,69 @@ def send_email(df: pd.DataFrame):
         lambda url: f'<a href="{url}">Article</a>' if url.startswith("http") else url
     )
 
-    html = df.to_html(index=False, escape=False)
+    # Order columns nicely
+    cols = [
+        "company_name",
+        "amount_raised",
+        "who_invested",
+        "two_line_description",
+        "founder_linkedin",
+        "link",
+    ]
+    df = df[cols]
+
+    table_html = df.to_html(index=False, escape=False)
+
+    # Wrap table in styled HTML
+    html = f"""
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body {{
+          font-family: Arial, sans-serif;
+          font-size: 14px;
+          color: #222;
+        }}
+        h2 {{
+          color: #0b5394;
+        }}
+        table {{
+          border-collapse: collapse;
+          width: 100%;
+        }}
+        th, td {{
+          border: 1px solid #ddd;
+          padding: 8px;
+          vertical-align: top;
+        }}
+        th {{
+          background-color: #0b5394;
+          color: #ffffff;
+          text-align: left;
+        }}
+        tr:nth-child(even) {{
+          background-color: #f9f9f9;
+        }}
+        tr:hover {{
+          background-color: #f1f1f1;
+        }}
+        a {{
+          color: #1155cc;
+          text-decoration: none;
+        }}
+        a:hover {{
+          text-decoration: underline;
+        }}
+      </style>
+    </head>
+    <body>
+      <h2>Daily Startup Funding Report</h2>
+      {table_html}
+    </body>
+    </html>
+    """
+
     msg.attach(MIMEText(html, "html"))
 
     server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
@@ -170,6 +266,7 @@ def main():
             {
                 "company_name": "No funding news found",
                 "amount_raised": "-",
+                "who_invested": "-",
                 "two_line_description": "-",
                 "founder_linkedin": "-",
                 "link": "-",
